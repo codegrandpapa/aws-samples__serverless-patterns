@@ -1,0 +1,217 @@
+name: Create and Update Releases
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  get-release:
+    runs-on: ubuntu-latest
+    outputs:
+      latest_release: ${{ steps.get_latest_release.outputs.latest_release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get the latest release tag
+        id: get_latest_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST_RELEASE=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || echo "none")
+          echo "Latest release tag: $LATEST_RELEASE"
+          echo "::set-output name=latest_release::$LATEST_RELEASE"
+          echo "latest_release=${latest_release}" >> $GITHUB_ENV
+        continue-on-error: true
+
+  create-release:
+    needs: get-release
+    runs-on: ubuntu-latest
+    if: needs.get-release.outputs.latest_release == ''
+    steps:
+      - name: print latest release output
+        run: echo "Latest release ${{ needs.get-release.outputs.latest_release }}"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch zip exclude list
+        # Pattern zips not built or uploaded (release is at GitHub's 1,000-asset
+        # cap). Maintained by Serverless Land. Stop if it can't be fetched:
+        # uploading without it would refill the freed slots.
+        run: |
+          curl -fsSL https://serverlessland.com/pattern-zip-exclude.json -o zip-exclude.json
+          jq -r '.exclude[]' zip-exclude.json > zip-exclude.txt
+          echo "Excluding $(wc -l < zip-exclude.txt) patterns"
+
+      - name: Release doesn't exist so create one
+        id: create_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v1.0.0 --notes "Initial release v1.0.0" --prerelease=false
+          echo "Release created"
+
+      - name: Zip pattern folders
+        id: zip_folders
+        run: |
+          mkdir -p temp
+          # A pattern is any folder containing an example-pattern.json, at any
+          # depth (flat "sqs-lambda-python-sam" or nested "sqs-lambda/python/sam").
+          # Each zip holds only that one leaf folder, named with the path
+          # flattened to "-" (e.g. sqs-lambda/python/sam -> sqs-lambda-python-sam.zip),
+          # so a single zip never spans more than one language/framework.
+          find . -name example-pattern.json \
+            -not -path './.github/*' -not -path './_*' -not -path '*/node_modules/*' \
+            -printf '%h\n' | sed 's|^\./||' | sort -u | while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            zip_name=$(echo "$dir" | tr '/' '-')
+            if grep -qxF "$zip_name" zip-exclude.txt; then echo "Skipping $zip_name (excluded)"; continue; fi
+            staging="temp/stage/${zip_name}"
+            mkdir -p "$staging"
+            # Copy the leaf folder's contents under a clean, flattened archive root.
+            cp -a "$dir/." "$staging/"
+            (cd temp/stage && zip -r "../${zip_name}.zip" "$zip_name" -q)
+            rm -rf "$staging"
+          done
+          rm -rf temp/stage
+          echo "Zip files created"
+
+      - name: upload files to the release
+        id: upload_files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for file in temp/*.zip; do
+            if [ -f "$file" ]; then
+              gh release upload v1.0.0 "$file" --clobber
+              echo "Uploaded $file, waiting to avoid rate limits..."
+              sleep 3
+            else
+              echo "File $file not found"
+            fi
+          done
+
+  update-release:
+    needs: get-release
+    runs-on: ubuntu-latest
+    if: needs.get-release.outputs.latest_release != ''
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch zip exclude list
+        # Pattern zips not built or uploaded (release is at GitHub's 1,000-asset
+        # cap). Maintained by Serverless Land. Stop if it can't be fetched:
+        # uploading without it would refill the freed slots.
+        run: |
+          curl -fsSL https://serverlessland.com/pattern-zip-exclude.json -o zip-exclude.json
+          jq -r '.exclude[]' zip-exclude.json > zip-exclude.txt
+          echo "Excluding $(wc -l < zip-exclude.txt) patterns"
+
+      - name: Get changed files
+        id: get_changes
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # Only the files changed by this push. Diffing against the release
+          # tag re-zipped every pattern changed since the release was created.
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+            && git fetch --no-tags --depth=1 origin "$BEFORE"; then
+            base="$BEFORE"
+          else
+            echo "::warning::Commit before this push not found; using the previous commit"
+            git fetch --no-tags --deepen=1 origin
+            base="HEAD~1"
+          fi
+          git diff --name-only "$base" HEAD > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
+          # Pattern folders this push removed (or moved): their example-pattern.json is gone.
+          git diff --name-only --no-renames --diff-filter=D "$base" HEAD \
+            | grep -E '(^|/)example-pattern\.json$' | xargs -r -n1 dirname \
+            | while IFS= read -r dir; do [ -f "$dir/example-pattern.json" ] || echo "$dir"; done \
+            > removed_folders.txt || true
+          echo "Removed patterns:"
+          cat removed_folders.txt
+
+      - name: Identify changed patterns
+        id: identify_folders
+        run: |
+          # Map each changed file to the pattern it belongs to: the nearest
+          # ancestor folder containing an example-pattern.json (any depth).
+          # Store that pattern folder path so a change to sqs-lambda/python/sam/...
+          # resolves to sqs-lambda/python/sam, not the family folder.
+          : > changed_folders.txt
+          if [ -s changed_files.txt ]; then
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              dir=$(dirname "$file")
+              while [ "$dir" != "." ] && [ "$dir" != "/" ] && [ ! -f "$dir/example-pattern.json" ]; do
+                dir=$(dirname "$dir")
+              done
+              if [ -f "$dir/example-pattern.json" ]; then
+                echo "$dir"
+              fi
+            done < changed_files.txt | sort -u > changed_folders.txt
+          fi
+          echo "Changed patterns:"
+          cat changed_folders.txt
+
+      - name: Archive changed patterns
+        run: |
+          mkdir -p temp_archives
+          while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            if [ -d "$dir" ]; then
+              zip_name=$(echo "$dir" | tr '/' '-')
+              if grep -qxF "$zip_name" zip-exclude.txt; then echo "Skipping $zip_name (excluded)"; continue; fi
+              staging="temp_archives/stage/${zip_name}"
+              mkdir -p "$staging"
+              # Each zip holds only this one leaf pattern, under a flattened
+              # archive root, so it never spans more than one language/framework.
+              cp -a "$dir/." "$staging/"
+              (cd temp_archives/stage && zip -r "../${zip_name}.zip" "$zip_name" -q)
+              rm -rf "$staging"
+              echo "Archived $dir as ${zip_name}.zip"
+            else
+              echo "Pattern folder $dir does not exist"
+            fi
+          done < changed_folders.txt
+          rm -rf temp_archives/stage
+
+      - name: Upload archives to release
+        if: needs.get-release.outputs.latest_release != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            zip_name=$(echo "$dir" | tr '/' '-')
+            if grep -qxF "$zip_name" zip-exclude.txt; then echo "Skipping $zip_name (excluded)"; continue; fi
+            archive="temp_archives/${zip_name}.zip"
+            if [ -f "$archive" ]; then
+              gh release upload ${{ needs.get-release.outputs.latest_release }} "$archive" --clobber
+              echo "Uploaded $archive, waiting to avoid rate limits..."
+              sleep 3
+            else
+              echo "Archive $archive not found"
+            fi
+          done < changed_folders.txt
+
+      - name: Delete zips of removed patterns
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            zip_name=$(echo "$dir" | tr '/' '-')
+            if gh release delete-asset ${{ needs.get-release.outputs.latest_release }} "${zip_name}.zip" -y; then
+              echo "Deleted ${zip_name}.zip"
+            else
+              echo "No ${zip_name}.zip in the release"
+            fi
+          done < removed_folders.txt

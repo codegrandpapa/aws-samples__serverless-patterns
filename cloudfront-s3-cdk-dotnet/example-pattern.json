@@ -1,0 +1,43 @@
+{
+  "title": "Amazon CloudFront to Amazon S3",
+  "description": "Serving private content from CloudFront with signed URLs and signed cookies",
+  "language": ".NET",
+  "level": "200",
+  "framework": "AWS CDK",
+  "introBox": {
+    "headline": "How it works",
+    "text": [
+      "This pattern demonstrates how to use CloudFront to securely serve private content.",
+      "In this pattern, the CDK stack creates an S3 bucket and a CloudFront distribution that is configured to accept requests with only valid signed URLs or signed Cookies."
+    ]
+  },
+  "gitHub": {
+    "template": {
+      "templateFile": "src/cdk/src/Cdk/CdkStack.cs"
+    }
+  },
+  "deploy": {
+    "text": [
+      "cdk deploy"
+    ]
+  },
+  "testing": {
+    "text": [
+      "See the GitHub repo for detailed testing instructions."
+    ]
+  },
+  "cleanup": {
+    "text": [
+      "Delete the stack: <code>cdk destroy</code>."
+    ]
+  },
+  "authors": [
+    {
+      "name": "Ankush Jain",
+      "bio": "Application Development Consultant at AWS Professional Services.",
+      "image": "https://avatars.githubusercontent.com/u/13661966?v=4",
+      "linkedin": "ankush-jain-developer",
+      "twitter": "ankushjain358"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "fargate",
+  "version": "1.0.0",
+  "description": "Fargate ECS container to run an express app",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "author": "nihilson",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.750.0",
+    "express": "^4.21.0",
+    "pg": "^8.11.3"
+  }
+}
