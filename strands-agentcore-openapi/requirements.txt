@@ -1,6 +1,6 @@
 # Core dependencies
 boto3>=1.34.0
-botocore>=1.34.0
+botocore>=1.43.114
 
 # Strands Agents SDK (AI agent orchestration)
 strands-agents>=1.0.0
