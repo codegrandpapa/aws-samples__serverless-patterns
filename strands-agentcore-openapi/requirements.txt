@@ -19,7 +19,7 @@ requests>=2.31.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-asyncio>=0.21.0
-hypothesis>=6.92.0
+hypothesis>=6.168.5
 moto>=4.2.0
 
 # Type checking
